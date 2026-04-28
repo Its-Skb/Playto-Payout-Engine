@@ -10,10 +10,12 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
-from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
 import os
+
+load_dotenv()
+
+from pathlib import Path
 import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -80,7 +82,7 @@ WSGI_APPLICATION = "playto_engine.wsgi.application"
 
 DATABASES = {
     "default": dj_database_url.parse(
-        os.getenv("postgresql://neondb_owner:npg_EpLCP6mgx8fV@ep-tiny-butterfly-anphd251.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require")
+        "postgresql://neondb_owner:npg_hZbNlR68mBCy@ep-tiny-butterfly-anphd251-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
     )
 }
 
