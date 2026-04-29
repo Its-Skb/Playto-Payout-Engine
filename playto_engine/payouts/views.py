@@ -1,9 +1,12 @@
 from django.shortcuts import render
 from django.db import transaction
+from django.conf import settings
 from django.db.models import Sum, Case, When, F, BigIntegerField
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+from django.utils import timezone
+from datetime import timedelta
 
 from .models import Merchant, LedgerEntry, Payout, IdempotencyKey
 from .serializers import PayoutCreateSerializer
@@ -35,7 +38,7 @@ def get_balance(request, merchant_id):
     )["total"] or 0
 
     # 🔹 Available balance
-    available_balance = total_balance - held_balance
+    available_balance = total_balance
 
     return Response({
         "total_balance": total_balance,
@@ -49,7 +52,7 @@ def get_balance(request, merchant_id):
 # -------------------------------
 @api_view(["POST"])
 def create_payout(request):
-    merchant_id = 1
+    merchant_id = Merchant.objects.first()
     idempotency_key = request.headers.get("Idempotency-Key")
 
     if not idempotency_key:
@@ -64,15 +67,15 @@ def create_payout(request):
     amount = serializer.validated_data["amount_paise"]
 
     with transaction.atomic():
-        merchant = Merchant.objects.select_for_update().get(id=merchant_id)
+        merchant = Merchant.objects.select_for_update().first()
 
-        from django.utils import timezone
-        from datetime import timedelta
+        if not merchant:
+            return Response({"error": "Merchant not found"}, status=404)
 
         expiry_time = timezone.now() - timedelta(hours=24)
 
         existing = IdempotencyKey.objects.filter(
-        merchant=merchant,
+            merchant=merchant,
             key=idempotency_key,
             created_at__gte=expiry_time
         ).first()
@@ -126,10 +129,8 @@ def create_payout(request):
             response=response_data
         )
 
-    # 🚀 Trigger ONLY after DB commit is guaranteed
-    from django.db import transaction
 
-    print("🔥 Sending task to Celery:", payout.id)
-    transaction.on_commit(lambda: process_payout.delay(payout.id))
+    if not settings.TESTING:
+        transaction.on_commit(lambda: process_payout.delay(payout.id))
 
     return Response(response_data, status=status.HTTP_201_CREATED)

@@ -26,6 +26,7 @@ class Payout(models.Model):
     idempotency_key = models.CharField(max_length=255)
     attempt_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
 
 

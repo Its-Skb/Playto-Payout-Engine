@@ -12,8 +12,11 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from dotenv import load_dotenv
 import os
+import sys
 
 load_dotenv()
+
+TESTING = 'test' in sys.argv
 
 from pathlib import Path
 import dj_database_url

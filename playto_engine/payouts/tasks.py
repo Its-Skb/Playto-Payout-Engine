@@ -1,6 +1,9 @@
 from celery import shared_task
 from django.db import transaction
+from django.utils import timezone
+from datetime import timedelta
 import random
+
 from .models import Payout, LedgerEntry
 
 
@@ -13,7 +16,12 @@ def process_payout(self, payout_id):
         if payout.status not in ["pending", "processing"]:
             return
 
-        # 🔄 Move to processing
+        # 🔁 Retry condition (30 sec rule)
+        if payout.status == "processing":
+            if timezone.now() - payout.updated_at > timedelta(seconds=30):
+                raise Exception("Retry due to timeout")
+
+        # 🔄 Move to processing (only first time)
         if payout.status == "pending":
             payout.status = "processing"
             payout.save()
@@ -32,7 +40,6 @@ def process_payout(self, payout_id):
                 payout.status = "failed"
                 payout.save()
 
-                # 💰 Refund money
                 LedgerEntry.objects.create(
                     merchant=payout.merchant,
                     amount_paise=payout.amount_paise,
