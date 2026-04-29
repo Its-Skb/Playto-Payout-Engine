@@ -7,6 +7,7 @@ from rest_framework import status
 
 from .models import Merchant, LedgerEntry, Payout, IdempotencyKey
 from .serializers import PayoutCreateSerializer
+from .tasks import process_payout
 
 
 # -------------------------------
@@ -48,7 +49,7 @@ def get_balance(request, merchant_id):
 # -------------------------------
 @api_view(["POST"])
 def create_payout(request):
-    merchant_id = 1  # ⚠️ Hardcoded for now (later replace with auth)
+    merchant_id = 1
     idempotency_key = request.headers.get("Idempotency-Key")
 
     if not idempotency_key:
@@ -57,25 +58,25 @@ def create_payout(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # 🔁 Idempotency check (return same response if already processed)
-    existing = IdempotencyKey.objects.filter(
-        merchant_id=merchant_id,
-        key=idempotency_key
-    ).first()
-
-    if existing:
-        return Response(existing.response)
-
     serializer = PayoutCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
     amount = serializer.validated_data["amount_paise"]
 
     with transaction.atomic():
-        # 🔒 Lock merchant row → prevents race condition
         merchant = Merchant.objects.select_for_update().get(id=merchant_id)
 
-        # 💰 Total balance (credits - debits)
+        # ✅ Idempotency (safe)
+        idempotency_obj, created = IdempotencyKey.objects.get_or_create(
+            merchant=merchant,
+            key=idempotency_key,
+            defaults={"response": {}}
+        )
+
+        if not created:
+            return Response(idempotency_obj.response)
+
+        # 💰 Balance
         total_balance = LedgerEntry.objects.filter(merchant=merchant).aggregate(
             total=Sum(
                 Case(
@@ -86,16 +87,7 @@ def create_payout(request):
             )
         )["total"] or 0
 
-        # 🔒 Held balance (pending + processing payouts)
-        held_balance = Payout.objects.filter(
-            merchant=merchant,
-            status__in=["pending", "processing"]
-        ).aggregate(total=Sum("amount_paise"))["total"] or 0
-
-        available_balance = total_balance - held_balance
-
-        # ❌ Reject if insufficient funds
-        if available_balance < amount:
+        if total_balance < amount:
             return Response(
                 {"error": "Insufficient balance"},
                 status=status.HTTP_400_BAD_REQUEST
@@ -109,7 +101,7 @@ def create_payout(request):
             idempotency_key=idempotency_key
         )
 
-        # 💳 Hold funds (create DEBIT entry)
+        # 💳 Hold funds
         LedgerEntry.objects.create(
             merchant=merchant,
             amount_paise=amount,
@@ -123,11 +115,12 @@ def create_payout(request):
             "amount": payout.amount_paise
         }
 
-        # 💾 Save idempotency response
-        IdempotencyKey.objects.create(
-            merchant=merchant,
-            key=idempotency_key,
-            response=response_data
-        )
+        # 💾 Save idempotent response
+        idempotency_obj.response = response_data
+        idempotency_obj.save()
+
+    # 🚀 Async trigger AFTER commit
+    print("🔥 Sending task to Celery:", payout.id)
+    process_payout.delay(payout.id)
 
     return Response(response_data, status=status.HTTP_201_CREATED)
