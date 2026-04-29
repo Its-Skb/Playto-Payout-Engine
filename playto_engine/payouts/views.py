@@ -66,15 +66,19 @@ def create_payout(request):
     with transaction.atomic():
         merchant = Merchant.objects.select_for_update().get(id=merchant_id)
 
-        # ✅ Idempotency (safe)
-        idempotency_obj, created = IdempotencyKey.objects.get_or_create(
-            merchant=merchant,
-            key=idempotency_key,
-            defaults={"response": {}}
-        )
+        from django.utils import timezone
+        from datetime import timedelta
 
-        if not created:
-            return Response(idempotency_obj.response)
+        expiry_time = timezone.now() - timedelta(hours=24)
+
+        existing = IdempotencyKey.objects.filter(
+        merchant=merchant,
+            key=idempotency_key,
+            created_at__gte=expiry_time
+        ).first()
+
+        if existing:
+            return Response(existing.response)
 
         # 💰 Balance
         total_balance = LedgerEntry.objects.filter(merchant=merchant).aggregate(
@@ -116,11 +120,16 @@ def create_payout(request):
         }
 
         # 💾 Save idempotent response
-        idempotency_obj.response = response_data
-        idempotency_obj.save()
+        IdempotencyKey.objects.create(
+            merchant=merchant,
+            key=idempotency_key,
+            response=response_data
+        )
 
-    # 🚀 Async trigger AFTER commit
+    # 🚀 Trigger ONLY after DB commit is guaranteed
+    from django.db import transaction
+
     print("🔥 Sending task to Celery:", payout.id)
-    process_payout.delay(payout.id)
+    transaction.on_commit(lambda: process_payout.delay(payout.id))
 
     return Response(response_data, status=status.HTTP_201_CREATED)
